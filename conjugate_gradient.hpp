@@ -14,7 +14,7 @@ using namespace linalgcpp;
 
 inline
 Vector<double> entrywise_mult(const Vector<double>& a, const Vector<double>& b){
-	assert (a.size()==b.size());
+	//assert (a.size()==b.size());
 	
 	Vector<double> c(a.size());
 	for(int k=0;k<a.size();++k){
@@ -34,7 +34,7 @@ Vector<double> entrywise_inv(const Vector<double>& a){
 
 //M=D+L, the lower triangular system (forward Gauss-Seidel)
 Vector<double> DLsolver(const SparseMatrix<double>& M, Vector<double> b){
-	assert(M.Rows()==M.Cols()&&M.Rows()==b.size());
+	//assert(M.Rows()==M.Cols()&&M.Rows()==b.size());
 	
 	const std::vector<int>& indptr=M.GetIndptr();
 	const std::vector<int>& indices=M.GetIndices();
@@ -61,7 +61,7 @@ Vector<double> DLsolver(const SparseMatrix<double>& M, Vector<double> b){
 
 //solve the upper triangular system (backward Gauss-Seidel)
 Vector<double> DUsolver(const SparseMatrix<double>& MT, Vector<double> b){
-	assert(MT.Rows()==MT.Cols()&&MT.Rows()==b.size());
+	//assert(MT.Rows()==MT.Cols()&&MT.Rows()==b.size());
 	
 	const std::vector<int>& indptr=MT.GetIndptr();
 	const std::vector<int>& indices=MT.GetIndices();
@@ -96,59 +96,58 @@ Vector<double> Solve_TL(const SparseMatrix<double>& A,
 	//1: "Pre-smooth" solve for x1/3
 	Vector<double> x13 = Msolver(A,b);
 	//2: compute restrictive residual
-	Vector<double> rc = P.MultAT(b-A.Mult(x13));
+	Vector<double> rc = P.MultAT(b-ParaMult(A,x13));//<======================parallel
 	//3: solve for xc
-	Vector<double> xc = AcInverse.Mult(rc);
+	Vector<double> xc = ParaMult(AcInverse,rc);//<======================parallel
 	//4: fine-level approximation
-	Vector<double> x23 = x13+Mult(P,xc);
+	Vector<double> x23 = x13+ParaMult(P,xc);//<======================parallel
 	//5: compute and return x
-	return MTsolver(A,b-A.Mult(x23))+x23;
+	return MTsolver(A,b-ParaMult(A,x23))+x23;//<======================parallel
 }
 
-/*! @brief The two-level condugate gradient method
-
-    @param A0 an s.p.d. matrix
-    @param b the right-hand-side of system
-    @param max_iter maximum number of iteration before exit
-	@param tol epsilon, the relative error tolerence
-	@param Ncoarse the dimension of the coarse matrix
-*/
 Vector<double> PCG_TL(const SparseMatrix<double>& A, const Vector<double>& b,int max_iter,double tol,int Ncoarse){
+	//level of difficulty: medium				    
 	//assert A is s.p.d.
-	assert(1<=Ncoarse && Ncoarse< A.Cols());
+	//assert 1<= Ncoarse < A.Cols()
 	
+	double ini_time;
+	double end_time;
+
+	ini_time=omp_get_wtime();
 	
 	Vector<int> partitions = Partition(A,Ncoarse);
 	SparseMatrix<int> P = Unweighted(partitions);
 	
-	DenseMatrix Ac = P.Transpose().Mult(A.Mult(P)).ToDense();
+	DenseMatrix Ac = ParaMult(P.Transpose(),ParaMult(A,P)).ToDense();//<======================parallel
 	
+	end_time=omp_get_wtime();
+//	std::cout<<std::setw(14)<<end_time-ini_time;
 	DenseMatrix AcInverse;
 	Ac.Invert(AcInverse);
 
 	int n = A.Cols();
 	
-	Vector<double> x(n,0.0);
+    Vector<double> x(n,0.0);
 	Vector<double> r(b);
-	Vector<double> pr = Solve_TL(A,Ac,P,AcInverse,*DLsolver,*DUsolver,r);
-	Vector<double> p(pr);
-	Vector<double> g(n);
-	double delta0 = r.Mult(pr);
-	double delta = delta0, deltaOld, tau, alpha;
+    Vector<double> pr = Solve_TL(A,Ac,P,AcInverse,*DLsolver,*DUsolver,r);
+    Vector<double> p(pr);
+    Vector<double> g(n);
+    double delta0 = r.Mult(pr);
+    double delta = delta0, deltaOld, tau, alpha;
 
 	for(int k=0;k<max_iter;k++){
-		g = A.Mult(p);
-		tau = p.Mult(g);
+		g = ParaMult(A,p);//<========================parallel
+	    tau = p.Mult(g);
 		alpha = delta / tau;
 		x = x + (alpha * p);
 		r = r - (alpha * g);
-		pr = Solve_TL(A,Ac,P,AcInverse,*DLsolver,*DUsolver,r);
+        pr = Solve_TL(A,Ac,P,AcInverse,*DLsolver,*DUsolver,r);
 		deltaOld = delta;
 		delta = r.Mult(pr);
-        if(delta < tol * tol * delta0){
-			std::cout<<"converge at iteration "<<k<<std::endl;
-			return x;
-        }
+        	if(delta < tol * tol * delta0){
+				//std::cout << std::setw(6) << k;
+            	return x;
+        	}
 	   	p = pr + ((delta / deltaOld)* p);
     }
 	
@@ -171,54 +170,51 @@ Vector<double> Solve_ML(const std::vector<SparseMatrix<double>>& A,
 	
 	for(int i=0;i<L;i++){
 		x[i]=Msolver(A[i],r[i]);
-		r[i+1]=P[i].MultAT(r[i]-A[i].Mult(x[i]));
+		r[i+1]=P[i].MultAT(r[i]-ParaMult(A[i],x[i]));//<====================parallel
 	}
 	
-	x[L]= AcInverse.Mult(r[L]);
+	x[L]= ParaMult(AcInverse,r[L]);//<====================parallel
 	
 	for(int i=L-1;i>=0;i--){
-		x[i]=x[i]+P[i].Mult(x[i+1]);
-		x[i]=x[i]+MTsolver(A[i],r[i]-A[i].Mult(x[i]));
+		x[i]=x[i]+ParaMult(P[i],x[i+1]);//<====================parallel
+		x[i]=x[i]+MTsolver(A[i],r[i]-ParaMult(A[i],x[i]));//<======================parallel
 	}
 	
 	return x[0];
 }
 
-/*! @brief The multi-level condugate gradient method
-
-    @param A0 an s.p.d. matrix
-    @param b the right-hand-side of system
-    @param max_iter maximum number of iteration before exit
-	@param tol epsilon, the relative error tolerence
-	@param Lmax the maximum number of levels
-	@param Ncoarse the dimension of the coarsest matrix
-*/
 Vector<double> PCG_ML(const SparseMatrix<double>& A0, const Vector<double>& b,int max_iter,double tol, int Lmax, int Ncoarse){
 	//assert A0 is s.p.d.
-	assert(Lmax >= 1);
-	assert (A0.Cols() >= Ncoarse && Ncoarse >= 1);
+	//assert Lmax >= 1
+	//assert A0.Cols()>=Ncoarse >= 1
 	
 	std::vector<int> N(Lmax+1);
 	N[0]=A0.Cols();
 	
 	double q = std::min(pow(1.0*Ncoarse/N[0],1.0/Lmax),0.5);
-	
+		
 	int L = 0;// the index of last Nk
 	for(int i = 1; i<Lmax;i++){
 		N[i]=N[i-1]*q;
 		if(N[i]!=0) L++;
 		if(N[i]<=Ncoarse) break;
 	}
-	
+		
 	std::vector<SparseMatrix<int>> P(L);
 	std::vector<SparseMatrix<double>> A(L+1);
 	A[0]=A0;
 	
+	double ini_time;
+	double end_time;
+
+	ini_time=omp_get_wtime();
 	for(int i=0;i<L;i++){
-		P[i] = getP_rand(A[i],N[i+1]);
-		A[i+1]= P[i].Transpose().Mult(A[i].Mult(P[i]));
+		P[i] = getP_rand(A[i],N[i+1]);//<=====================parallel
+		A[i+1]= ParaMult(P[i].Transpose(),ParaMult(A[i],P[i]));//<====================parallel
 	}
+	end_time=omp_get_wtime();
 	
+	//std::cout<<std::setw(14)<<end_time-ini_time;
 	DenseMatrix AcInverse;
 	A[L].ToDense().Invert(AcInverse);
 	
@@ -232,7 +228,7 @@ Vector<double> PCG_ML(const SparseMatrix<double>& A0, const Vector<double>& b,in
     double delta = delta0, deltaOld, tau, alpha;
 
     for(int k=0;k<max_iter;k++){
-        g = A[0].Mult(p);
+        g = ParaMult(A[0],p);//<===================parallel
         tau = p.Mult(g);
         alpha = delta / tau;
         x = x + (alpha * p);
@@ -241,7 +237,7 @@ Vector<double> PCG_ML(const SparseMatrix<double>& A0, const Vector<double>& b,in
 		deltaOld = delta;
 		delta = r.Mult(pr);
         if(delta < tol * tol * delta0){
-            std::cout<<"converge at iteration "<<k<<std::endl;
+			//std::cout << std::setw(6) << k;
             return x;
         }
         p = pr + ((delta / deltaOld)* p);
@@ -279,21 +275,16 @@ Vector<double> Solve_Jacobian(const SparseMatrix<double>& A, Vector<double> r){
 	//assert(A.Rows()==A.Cols()&&A.Rows()==r.size());
 	
 	int n = A.Cols();
+	#pragma omp parallel for
 	for(int i=0;i<n;++i){
 		r[i]/=diag[i];
 	}
 	return r;
 }
 
-/*! @brief The preconditioned condugate gradient method
 
-    @param A an s.p.d. matrix
-    @param b the right-hand-side of system
-	@param Msolver the preconditioning function which solves Mx=b for a particular preconditioner M
-    @param max_iter maximum number of iteration before exit
-	@param tol epsilon
-*/
 Vector<double> PCG(const SparseMatrix<double>& A, const Vector<double>& b, Vector<double>(*Msolver)(const SparseMatrix<double>& , Vector<double>),int max_iter,double tol){
+	//level of difficulty: medium				    
 	//assert A is s.p.d.
 	
     int n = A.Cols();
@@ -311,7 +302,7 @@ Vector<double> PCG(const SparseMatrix<double>& A, const Vector<double>& b, Vecto
 	
 	
     for(int k=0;k<max_iter;k++){
-        g = A.Mult(p);
+        g = ParaMult(A,p);//<=========================parallel
         tau = p.Mult(g);
         alpha = delta / tau;
         x = x + (alpha * p);
@@ -320,7 +311,7 @@ Vector<double> PCG(const SparseMatrix<double>& A, const Vector<double>& b, Vecto
 		deltaOld = delta;
 		delta = r.Mult(pr);
         if(delta < tol * tol * delta0){
-            std::cout<<"converge at iteration "<<k<<std::endl;
+			//std::cout << std::setw(20) << k;
             return x;
         }
         p = pr + ((delta / deltaOld)* p);
@@ -349,7 +340,7 @@ Vector<double> CG(const SparseMatrix<double>& A, const Vector<double>& b, int ma
     double delta = delta0, deltaOld, tau, alpha;
 
     for(int k=0;k<max_iter;k++){
-		g = A.Mult(p);
+		g = ParaMult(A,p);//<===================parallel
         tau = p.Mult(g);
         alpha = delta / tau;
         x = x + (alpha * p);
@@ -357,7 +348,7 @@ Vector<double> CG(const SparseMatrix<double>& A, const Vector<double>& b, int ma
         deltaOld = delta;
 		delta = r.Mult(r);
         if(delta < tol * tol * delta0){
-            std::cout<<"converge at iteration "<<k<<std::endl;
+			//std::cout << std::setw(20) << k;
             return x;
         }
         p = r + ((delta / deltaOld)* p);
