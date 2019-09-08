@@ -57,6 +57,8 @@ SparseMatrix<int> getP(const SparseMatrix<double>& A, int Ncoarse){
 	
 	int n = A.Cols();
 	
+	std::cout<<"lubys at n = "<<n<<std::endl;
+	
 	std::vector<std::pair<int,int>> max_edge(n);
 	
 	const std::vector<int>& indptr=A.GetIndptr();
@@ -64,16 +66,25 @@ SparseMatrix<int> getP(const SparseMatrix<double>& A, int Ncoarse){
 	const std::vector<double>& data=A.GetData();
 	
 	for(int i=0;i<n;i++){
+		//watch(i);
+		//log("==============");
+		//std::vector<int> indices = A.GetIndices(i);
+		//std::vector<double> data = A.GetData(i);
 		int max_index = indices[indptr[i]];
 		double max_weight = data[indptr[i]];
 		
 		for(int j=indptr[i];j<indptr[i+1];++j){
+			//watch(data[j]);
+			//watch(indices[j]);
 			if(indices[j]==i) continue;
 			if(data[j]>max_weight){
 				max_index=indices[j];
 				max_weight=data[j];
 			}
 		}
+		
+		//watch(max_weight);
+		//watch(max_index);
 		max_edge[i]=std::make_pair(std::min(i,max_index),std::max(i,max_index));
 	}
 	
@@ -90,6 +101,9 @@ SparseMatrix<int> getP(const SparseMatrix<double>& A, int Ncoarse){
 			P.Add(i,col++,1);
 		}
 	}
+	
+	
+	std::cout<<"partitioned to at n = "<<col<<std::endl;
 	
 	
 	SparseMatrix<int> Ps = P.ToSparse();
@@ -118,7 +132,6 @@ SparseMatrix<int> getP_rand(const SparseMatrix<double>& A, int Ncoarse){
 	const std::vector<int>& indices_=A.GetIndices();
 	
 	CooMatrix<double> Rand(n);
-	
 	for(int i=0;i<n;i++){
 		for(int j=indptr_[i];j<indptr_[i+1];j++){
 			if(indices_[j]<i){
@@ -135,7 +148,6 @@ SparseMatrix<int> getP_rand(const SparseMatrix<double>& A, int Ncoarse){
 	const std::vector<int>& indices=SR.GetIndices();
 	const std::vector<double>& data=SR.GetData();
 	
-	#pragma omp parallel for
 	for(int i=0;i<n;i++){
 		if(indptr[i]+1==indptr[i+1]&&indices[indptr[i]]==i){
 			max_edge[i]=std::make_pair(i,i);
